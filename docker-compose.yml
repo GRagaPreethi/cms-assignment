@@ -1,0 +1,128 @@
+version: '3.9'
+
+services:
+  # ─── MongoDB ────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    container_name: cms-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_DATABASE: headless-cms
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    networks:
+      - cms-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── Backend ────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cms-backend
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      MONGO_URI: mongodb://mongodb:27017/headless-cms
+      JWT_SECRET: ${JWT_SECRET:-super_secure_cms_jwt_secret_change_in_production_2024}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CORS_ORIGIN: http://localhost:3000,http://localhost:3001,http://public-frontend:3000,http://admin-cms:80
+    networks:
+      - cms-network
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/api/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── Seed (runs once, then exits) ────────────────────────────
+  seed:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cms-seed
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/headless-cms
+      JWT_SECRET: ${JWT_SECRET:-super_secure_cms_jwt_secret_change_in_production_2024}
+      NODE_ENV: production
+    command: ["node", "src/seed/seed.js"]
+    networks:
+      - cms-network
+    restart: "no"
+
+  # ─── Admin CMS ────────────────────────────────────────────
+  admin-cms:
+    build:
+      context: ./admin-cms
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""
+    container_name: cms-admin
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - cms-network
+    ports:
+      - "3001:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ─── Public Frontend ─────────────────────────────────────────
+  public-frontend:
+    build:
+      context: ./public-frontend
+      dockerfile: Dockerfile
+      args:
+        API_URL: http://backend:5000
+        NEXT_PUBLIC_API_URL: http://localhost:5000
+    container_name: cms-public
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      API_URL: http://backend:5000
+      NEXT_PUBLIC_API_URL: http://localhost:5000
+    networks:
+      - cms-network
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  cms-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  mongodb_config:
